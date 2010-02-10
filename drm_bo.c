@@ -462,25 +462,41 @@ static void drm_bo_destroy_locked(struct drm_buffer_object *bo)
 static void drm_bo_delayed_delete(struct drm_device *dev, int remove_all)
 {
 	struct drm_buffer_manager *bm = &dev->bm;
+	struct drm_buffer_object *entry;
 
-	struct drm_buffer_object *entry, *nentry;
-	struct list_head *list, *next;
+        entry = NULL;
 
-	list_for_each_safe(list, next, &bm->ddestroy) {
-		entry = list_entry(list, struct drm_buffer_object, ddestroy);
+        if (list_empty(&bm->ddestroy))
+                return;
 
-		nentry = NULL;
-		if (next != &bm->ddestroy) {
-			nentry = list_entry(next, struct drm_buffer_object,
-					    ddestroy);
-			atomic_inc(&nentry->usage);
-		}
+        entry = list_first_entry(&bm->ddestroy,
+                                 struct drm_buffer_object, ddestroy);
+        atomic_inc(&entry->usage);
 
-		drm_bo_cleanup_refs(entry, remove_all);
+        for (;;) {
+                struct drm_buffer_object *nentry;
 
-		if (nentry)
-			atomic_dec(&nentry->usage);
-	}
+                nentry = NULL;
+                if (entry->ddestroy.next != &bm->ddestroy) {
+                        nentry = list_first_entry(&entry->ddestroy,
+                                                  struct drm_buffer_object, ddestroy);
+                        atomic_inc(&nentry->usage);
+                }
+
+                drm_bo_cleanup_refs(entry, remove_all);
+                atomic_dec(&entry->usage);
+
+                entry = nentry;
+
+                if (!entry)
+                        break;
+
+                if (list_empty((&entry->ddestroy)))
+                        break;
+        }
+
+        if (entry)
+                atomic_dec(&entry->usage);
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
