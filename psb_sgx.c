@@ -948,6 +948,7 @@ static int psb_cmdbuf_2d(struct drm_file *priv,
 		   execution */
 		while(test_bit(0, &psb_blit_info.vdc_bit)==0)
 			schedule();
+                psb_idle_2d(dev);
 	}
 #endif	/* PSB_DETEAR */
 
