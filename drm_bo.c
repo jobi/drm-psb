@@ -724,9 +724,11 @@ static int drm_bo_evict(struct drm_buffer_object *bo, unsigned mem_type,
 
 	ret = drm_bo_wait(bo, 0, 0, no_wait);
 
-	if (ret && ret != -EAGAIN) {
-		DRM_ERROR("Failed to expire fence before "
-			  "buffer eviction.\n");
+	if (ret) {
+                if (ret != -EAGAIN) {
+                        DRM_ERROR("Failed to expire fence before "
+                                  "buffer eviction.\n");
+                }
 		goto out;
 	}
 
