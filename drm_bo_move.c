@@ -162,7 +162,8 @@ static int drm_copy_io_page(void *dst, void *src, unsigned long page)
 }
 
 static int drm_copy_io_ttm_page(struct drm_ttm *ttm, void *src,
-				unsigned long page)
+				unsigned long page,
+                                pgprot_t prot)
 {
 	struct page *d = drm_ttm_get_page(ttm, page);
 	void *dst;
@@ -171,16 +172,30 @@ static int drm_copy_io_ttm_page(struct drm_ttm *ttm, void *src,
 		return -ENOMEM;
 
 	src = (void *)((unsigned long)src + (page << PAGE_SHIFT));
-	dst = kmap(d);
+        if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+                dst = vmap(&d, 1, 0, prot);
+        else
+                dst = kmap(d);
+
 	if (!dst)
 		return -ENOMEM;
 
 	memcpy_fromio(dst, src, PAGE_SIZE);
-	kunmap(d);
+
+#ifdef CONFIG_X86
+        kunmap_atomic(dst, KM_USER0);
+#else
+        if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+                vunmap(dst);
+        else
+                kunmap(d);
+#endif
+
 	return 0;
 }
 
-static int drm_copy_ttm_io_page(struct drm_ttm *ttm, void *dst, unsigned long page)
+static int drm_copy_ttm_io_page(struct drm_ttm *ttm, void *dst, unsigned long page,
+                                pgprot_t prot)
 {
 	struct page *s = drm_ttm_get_page(ttm, page);
 	void *src;
@@ -189,13 +204,57 @@ static int drm_copy_ttm_io_page(struct drm_ttm *ttm, void *dst, unsigned long pa
 		return -ENOMEM;
 
 	dst = (void *)((unsigned long)dst + (page << PAGE_SHIFT));
-	src = kmap(s);
+
+        if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+                src = vmap(&s, 1, 0, prot);
+        else
+                src = kmap(s);
+
 	if (!src)
 		return -ENOMEM;
 
 	memcpy_toio(dst, src, PAGE_SIZE);
-	kunmap(s);
+
+#ifdef CONFIG_X86
+        kunmap_atomic(s, KM_USER0);
+#else
+        if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL))
+                vunmap(src);
+        else
+                kunmap(s);
+#endif
+
 	return 0;
+}
+
+static pgprot_t drm_kernel_io_prot(uint32_t map_type)
+{
+	pgprot_t tmp = PAGE_KERNEL;
+
+#if defined(__i386__) || defined(__x86_64__)
+#ifdef USE_PAT_WC
+#warning using pat
+	if (drm_use_pat() && map_type == _DRM_TTM) {
+		pgprot_val(tmp) |= _PAGE_PAT;
+		return tmp;
+	}
+#endif
+	if (boot_cpu_data.x86 > 3 && map_type != _DRM_AGP) {
+		pgprot_val(tmp) |= _PAGE_PCD;
+		pgprot_val(tmp) &= ~_PAGE_PWT;
+	}
+#elif defined(__powerpc__)
+	pgprot_val(tmp) |= _PAGE_NO_CACHE;
+	if (map_type == _DRM_REGISTERS)
+		pgprot_val(tmp) |= _PAGE_GUARDED;
+#endif
+#if defined(__ia64__)
+	if (map_type == _DRM_TTM)
+		tmp = pgprot_writecombine(tmp);
+	else
+		tmp = pgprot_noncached(tmp);
+#endif
+	return tmp;
 }
 
 int drm_bo_move_memcpy(struct drm_buffer_object *bo,
@@ -240,12 +299,15 @@ int drm_bo_move_memcpy(struct drm_buffer_object *bo,
 
 	for (i = 0; i < new_mem->num_pages; ++i) {
 		page = i * dir + add;
-		if (old_iomap == NULL)
-			ret = drm_copy_ttm_io_page(ttm, new_iomap, page);
-		else if (new_iomap == NULL)
-			ret = drm_copy_io_ttm_page(ttm, old_iomap, page);
-		else
+		if (old_iomap == NULL) {
+                        pgprot_t prot = drm_kernel_io_prot(man->drm_bus_maptype);
+			ret = drm_copy_ttm_io_page(ttm, new_iomap, page, prot);
+                } else if (new_iomap == NULL) {
+                        pgprot_t prot = drm_kernel_io_prot(man->drm_bus_maptype);
+			ret = drm_copy_io_ttm_page(ttm, old_iomap, page, prot);
+                } else {
 			ret = drm_copy_io_page(new_iomap, old_iomap, page);
+                }
 		if (ret)
 			goto out1;
 	}
@@ -419,36 +481,6 @@ unsigned long drm_bo_offset_end(unsigned long offset,
 	return (end < offset) ? end : offset;
 }
 EXPORT_SYMBOL(drm_bo_offset_end);
-
-static pgprot_t drm_kernel_io_prot(uint32_t map_type)
-{
-	pgprot_t tmp = PAGE_KERNEL;
-
-#if defined(__i386__) || defined(__x86_64__)
-#ifdef USE_PAT_WC
-#warning using pat
-	if (drm_use_pat() && map_type == _DRM_TTM) {
-		pgprot_val(tmp) |= _PAGE_PAT;
-		return tmp;
-	}
-#endif
-	if (boot_cpu_data.x86 > 3 && map_type != _DRM_AGP) {
-		pgprot_val(tmp) |= _PAGE_PCD;
-		pgprot_val(tmp) &= ~_PAGE_PWT;
-	}
-#elif defined(__powerpc__)
-	pgprot_val(tmp) |= _PAGE_NO_CACHE;
-	if (map_type == _DRM_REGISTERS)
-		pgprot_val(tmp) |= _PAGE_GUARDED;
-#endif
-#if defined(__ia64__)
-	if (map_type == _DRM_TTM)
-		tmp = pgprot_writecombine(tmp);
-	else
-		tmp = pgprot_noncached(tmp);
-#endif
-	return tmp;
-}
 
 static int drm_bo_ioremap(struct drm_buffer_object *bo, unsigned long bus_base,
 			  unsigned long bus_offset, unsigned long bus_size,
