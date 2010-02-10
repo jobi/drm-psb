@@ -2149,13 +2149,15 @@ restart:
 int drm_bo_clean_mm(struct drm_device *dev, unsigned mem_type)
 {
 	struct drm_buffer_manager *bm = &dev->bm;
-	struct drm_mem_type_manager *man = &bm->man[mem_type];
+	struct drm_mem_type_manager *man;
 	int ret = -EINVAL;
 
 	if (mem_type >= DRM_BO_MEM_TYPES) {
 		DRM_ERROR("Illegal memory type %d\n", mem_type);
 		return ret;
 	}
+
+        man = &bm->man[mem_type];
 
 	if (!man->has_type) {
 		DRM_ERROR("Trying to take down uninitialized "
